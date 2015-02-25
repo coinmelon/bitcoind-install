@@ -1,0 +1,444 @@
+#! /bin/bash
+
+################################################################################
+
+scriptName="$(basename $(readlink -qe "${0}"))"
+
+################################################################################
+
+bitcoind='/usr/bin/bitcoind'
+bitcoinCli='/usr/bin/bitcoin-cli'
+
+bitcoindUser='bitcoind'
+bitcoindGroup='bitcoind'
+
+piddir='/var/run/bitcoind'
+pidfile="${piddir}/bitcoind.pid"
+configfile='/etc/bitcoind/bitcoind.conf'
+
+datadir='/var/lib/bitcoind'
+
+(( bitcoindTimeout = 10 ))
+(( bitcoindDelta   = 1  ))
+
+################################################################################
+
+statusBitcoind() {
+  local status
+
+  echo -n "Checking \`bitcoind' status... "
+  status="$(sudo           \
+    -n                     \
+    "-u${bitcoindUser}"    \
+    "-g${bitcoindGroup}"   \
+    --                     \
+    "${bitcoinCli}"        \
+    "--conf=${configfile}" \
+    "--datadir=${datadir}" \
+    ping 2>&1)";
+
+  if (( 0 != "$?" )); then
+    if [[ ! "${status}" =~ ^.*\{.*\}.*$ ]]; then
+      echo 'off!'; return 1
+    elif [[ ! "${status}" =~ ^.*\"code\":-28[,\}].*$ ]]; then
+      echo 'waiting!'; return 3
+    fi
+    echo 'error!'; return 4
+  fi
+
+  echo 'running!'
+  return 0
+}
+
+startBitcoind() {
+  echo -n "Starting \`bitcoind'... "
+
+  if ! mkdir -p "${piddir}"; then
+    echo 'error! cannot create PID directory!'; return 1
+  fi
+
+  if ! chown "${bitcoindUser}:${bitcoindGroup}" "${piddir}"; then
+    echo 'error! cannot change ownership of PID directory!'; return 1
+  fi
+
+  if ! chmod 'u=rwxs,g=s,o=t' "${piddir}"; then
+    echo 'error! cannot change permissions of PID directory!'; return 1
+  fi
+
+  if ! sudo                \
+    -n                     \
+    "-u${bitcoindUser}"    \
+    "-g${bitcoindGroup}"   \
+    --                     \
+    "${bitcoind}"          \
+    "--pid=${pidfile}"     \
+    "--conf=${configfile}" \
+    "--datadir=${datadir}" \
+    --daemon               \
+    >/dev/null 2>&1; then
+    echo 'error!'; return 1
+  fi
+
+  echo 'done!'
+  return 0
+}
+
+stopBitcoind() {
+  echo -n "Stopping \`bitcoind'... "
+  if ! sudo                \
+    -n                     \
+    "-u${bitcoindUser}"    \
+    "-g${bitcoindGroup}"   \
+    --                     \
+    "${bitcoinCli}"        \
+    "--conf=${configfile}" \
+    "--datadir=${datadir}" \
+    stop                   \
+    >/dev/null 2>&1; then
+    echo 'error!'; return 1
+  fi
+
+  echo 'done!'
+  return 0
+}
+
+################################################################################
+
+verifyRpcWorthy() {
+  local ok='ok'
+
+  echo -n 'Checking configuration... '
+  if ! grep -qse'^server=1'     "${configfile}"; then echo -n "missing \`server' directive!, "     ; ok='ko'; fi
+  if ! grep -qse'^rpcuser='     "${configfile}"; then echo -n "missing \`rpcuser' directive!, "    ; ok='ko'; fi
+  if ! grep -qse'^rpcpassword=' "${configfile}"; then echo -n "missing \`rpcpassword' directive!, "; ok='ko'; fi
+
+  if [[ 'ko' == "${ok}" ]]; then
+    echo 'error!'; return 1
+  fi
+
+  echo 'done!'
+  return 0
+}
+
+################################################################################
+
+doStart() {
+  local i
+  local status
+  local forced="${1:-no}"; forced="${forced,,}"
+
+  if [[ 'no' == "${forced}" ]]; then
+    if ! verifyRpcWorthy; then
+      return 1
+    fi
+    statusBitcoind; (( status = $? ))
+    if (( 1 != status )); then
+      return 1
+    fi
+  elif [[ 'forced' != "${forced}" ]]; then
+    echo "Unknown forcing specification \`${1}'!"
+  fi
+
+  if ! startBitcoind; then
+    echo 'error!'; return 1
+  fi
+
+  echo -n "Waiting for \`bitcoind' to load... "
+  for (( i = 0; i < bitcoindTimeout; i += bitcoindDelta )); do
+    sleep "${bitcoindDelta}"
+    statusBitcoind >/dev/null; (( status = $? ))
+    if (( 0 == status )); then
+      echo 'done!'; return 0
+    elif (( 3 != status )); then
+      echo 'error!'; return 1
+    fi
+  done
+
+  echo 'timeout!'
+  return 1
+}
+
+doStop() {
+  local i
+  local status
+  local forced="${1:-no}"; forced="${forced,,}"
+
+  if [[ 'no' == "${forced}" ]]; then
+    if ! verifyRpcWorthy; then
+      return 1
+    fi
+    statusBitcoind; (( status = $? ))
+    if (( 1 == status )); then
+      return 1
+    fi
+  elif [[ 'forced' != "${forced}" ]]; then
+    echo "Unknown forcing specification \`${1}'!"
+  fi
+
+  echo -n "Stopping \`bitcoind'... "
+  if ! stopBitcoind; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n "Waiting for \`bitcoind' to stop... "
+  for (( i = 0; i < bitcoindTimeout; i += bitcoindDelta )); do
+    sleep "${bitcoindDelta}"
+    statusBitcoind >/dev/null; (( status = $? ))
+    if (( 1 == status )); then
+      echo 'done!'; return 0
+    elif (( 0 != status )); then
+      echo 'error!'; return 1
+    fi
+  done
+
+  echo 'timeout!'
+  return 1
+}
+
+doRestart() {
+  doStop "${@}"
+  doStart "${@}"
+}
+
+doForcedStart() {
+  doStart 'forced'
+}
+
+doForcedStop() {
+  doStop 'forced'
+}
+
+doForcedRestart() {
+  doForcedStop
+  doForcedStart
+}
+
+doStatus() {
+  statusBitcoind
+}
+
+doCheckConfig() {
+  verifyRpcWorthy
+}
+
+################################################################################
+
+showUsage() {
+  case "${1,,}" in
+    'start') cat <<USAGE
+Usage: ${scriptName} start [-f | --force]
+  or:  ${scriptName} start [-h | --help]
+
+This action will start the service if currently stopped, checking the
+configuration beforehand (as if the \`check-config' option had been issued).
+
+If the \`-f' or \`--force' option is given, the check for the service's running
+status will be skipped, as will the configuration checks, forcing a startup
+procedure to be initiated regardless.
+
+
+The only options accepted by action \`start' are:
+    -f, --force          Force the action taken
+    -h, --help           Show this help
+
+USAGE
+      ;;
+    'stop') cat <<USAGE
+Usage: ${scriptName} stop [-f | --force]
+  or:  ${scriptName} stop [-h | --help]
+
+This action will stop the service if currently running.
+
+If the \`-f' or \`--force' option is given, the check for the service's running
+status will be skipped, forcing a \`stop' command to be sent regardless.
+
+
+The only options accepted by action \`stop' are:
+    -f, --force          Force the action taken
+    -h, --help           Show this help
+
+USAGE
+      ;;
+    'restart') cat <<USAGE
+Usage: ${scriptName} restart [-f | --force]
+  or:  ${scriptName} restart [-h | --help]
+
+This action will:
+    - stop the service if currently running, and
+    - start the service again.
+
+If the \`-f' or \`--force' option is given, the stop and start steps are
+forced, as if performed by the \`force-stop' and \`force-start' actions.
+
+The only options accepted by action \`restart' are:
+    -f, --force          Force the actions taken
+    -h, --help           Show this help
+
+USAGE
+      ;;
+    'force-start') cat <<USAGE
+Usage: ${scriptName} force-start
+  or:  ${scriptName} force-start [-h | --help]
+
+This action will forcefully (ie. without verifying the config file for sanity
+or the service for the currently running status) start the service.
+
+The only option accepted by action \`force-start' is:
+    -h, --help           Show this help
+
+USAGE
+      ;;
+    'force-stop') cat <<USAGE
+Usage: ${scriptName} force-stop
+  or:  ${scriptName} force-stop [-h | --help]
+
+This action will forcefully (ie. without verifying the config file for sanity
+or the service for the currently running status) stop the service.
+
+The only option accepted by action \`force-stop' is:
+    -h, --help              Show this help
+
+USAGE
+      ;;
+    'force-restart') cat <<USAGE
+Usage: ${scriptName} force-restart
+  or:  ${scriptName} force-restart [-h | --help]
+
+This action will forcefully (ie. without verifying the config file for sanity)
+restart the service.
+
+
+The only option accepted by action \`force-restart' is:
+    -h, --help              Show this help
+
+USAGE
+      ;;
+    'status') cat <<USAGE
+Usage: ${scriptName} status
+  or:  ${scriptName} status [-h | --help]
+
+This action will:
+    - exit with \`0' status if the service is currently running,
+    - exit with \`1' status if the service is NOT running, and
+    - exit with \`3' status if the service is still loading.
+
+
+The only option accepted by action \`status' is:
+    -h, --help    Show this help
+
+USAGE
+      ;;
+    'check-config') cat <<USAGE
+Usage: ${scriptName} check-config
+  or:  ${scriptName} check-config [-h | --help]
+
+This action will:
+    - check the config file contains a \`server' directive,
+    - check the config file contains a \`rpcuser' directive, and
+    - check the config file contains a \`rpcpassword' directive.
+
+
+The only option accepted by action \`check-config' is:
+    -h, --help    Show this help
+
+USAGE
+      ;;
+    *) cat <<USAGE
+Usage: ${scriptName} ACTION [OPTIONS...]
+  or:  ${scriptName} --help
+
+  ACTION is one of (case insensitive):
+    start          Start the service
+    stop           Stop the service
+    restart        Restart the service
+    force-start    Forcibly start the service (EXACTLY like using \`-f', or
+                       \`--force')
+    force-stop     Forcibly stop the service (EXACTLY like using \`-f', or
+                       \`--force')
+    force-restart  Forcibly restart the service (EXACTLY like using \`-f', or
+                       \`--force')
+    status         Check running status
+    check-config   Check configuration
+
+  OPTIONS may be:
+    -f, --force    Force the action (only for actions \`start', \`stop', and
+                       \`restart')
+
+    -h, --help    If no action given, show this help, otherwise show an
+                      action-specific help
+
+USAGE
+      ;;
+  esac
+}
+
+showNotice() {
+  echo "Errors where encountered, try calling \`${scriptName} --help'!"
+}
+
+checkForce() {
+  case "${1,,}" in
+    'start'|'stop'|'restart')                                         return 0 ;;
+    *) echo "No forcing specification recognized for action \`${1}'"; return 1 ;;
+  esac
+}
+
+parseOptions() {
+  local actionStr="${1}"
+  local failed=''
+
+  forced=''
+
+  action="${actionStr,,}"
+  help=''
+
+  shift
+
+  case "${action}" in
+    'start'|'stop'|'restart'|'force-start'|'force-stop'|'force-restart'|'status'|'check-config') : ;;
+    '-h'|'--help') action=''; help='help'; return 0 ;;
+    ?*) echo "Unrecognized action \`${actionStr}'!"; action=''; return 1 ;;
+    *)  echo 'No action provided!'                 ; action=''; return 1 ;;
+  esac
+
+  while (( $# > 0 )); do
+    case "${1}" in
+      '-f')       if checkForce "${actionStr}"; then forced='forced'; else failed='failed'; fi ;;
+      '--forced') if checkForce "${actionStr}"; then forced='forced'; else failed='failed'; fi ;;
+      #
+      '-h'|'--help') help='help'; return 0 ;;
+      #
+      *) echo "Unrecognized option \`${1}'!"; failed='failed' ;;
+    esac
+    shift
+  done
+
+  if [[ '' != "${failed}" ]]; then return 1; fi
+
+  forced="${forced:-no}"
+}
+
+main() {
+  if ! parseOptions "${@}"; then return 1; fi
+
+  if [[ '' != "${help}" ]]; then showUsage "${action}"; return 0; fi
+
+  case "${action}" in
+    'start')   doStart   "${forced}" ;;
+    'stop')    doStop    "${forced}" ;;
+    'restart') doRestart "${forced}" ;;
+    #
+    'forced-start')   doForcedStart   ;;
+    'forced-stop')    doForcedStop    ;;
+    'forced-restart') doForcedRestart ;;
+    #
+    'status')       doStatus      ;;
+    'check-config') doCheckConfig ;;
+  esac
+
+  return 0
+}
+
+
+if ! main "${@}"; then showNotice; exit 1; else exit 0; fi
