@@ -1,0 +1,1167 @@
+#! /bin/bash
+
+################################################################################
+
+(( startTime = "$(date +'%s')" ))
+
+timeDifference() {
+  local tdiff='', ret=''
+  (( tdiff = "${2}" - "${1}" )); if (( tdiff < 0 )); then (( tdiff = -tdiff )); fi
+  if (( tdiff / 31536000 > 0 )); then res="${res}$(( tdiff / 31536000 ))y "; (( tdiff %= 31536000 )); fi
+  if (( tdiff /    86400 > 0 )); then res="${res}$(( tdiff /    86400 ))d "; (( tdiff %=    86400 )); fi
+  if (( tdiff /     3600 > 0 )); then res="${res}$(( tdiff /     3600 ))h "; (( tdiff %=     3600 )); fi
+  if (( tdiff /       60 > 0 )); then res="${res}$(( tdiff /       60 ))m "; (( tdiff %=       60 )); fi
+  if (( tdiff            > 0 )); then res="${res}$(( tdiff            ))s ";                          fi
+  res="${res%% }"
+  echo "${res:-(none)}"
+}
+
+################################################################################
+
+scriptName="$(basename $(readlink -qe "${0}"))"
+originalDirectory="$(readlink -qe "$(pwd)")"
+installerDirectory="$(dirname "$(readlink -qe "${0}")")"
+temporaryDir=''
+
+createTemporaryAndCd() {
+  temporaryDir="${TMP:-${TEMP:-${TMPDIR:-${TEMPDIR:-/tmp}}}}/$(tr -cd a-zA-Z0-9 < /dev/urandom | head -c32)"
+  if ! (umask 077 && mkdir "${temporaryDir}"); then
+    return 1
+  fi
+  cd "${temporaryDir}"
+}
+
+returnAndRemoveTemporary() {
+  cd "${originalDirectory}"
+  if [[ '' != "${temporaryDir}" ]]; then
+    echo -n 'Removing temporary directory... '
+    rm -rf "${temporaryDir}"
+    echo 'done!'
+  fi
+}
+
+################################################################################
+
+updated='no'
+
+declare -A dependencyStatus
+dependencyStatus['build-essential']='unknown'
+dependencyStatus['libtool']='unknown'
+dependencyStatus['autotools-dev']='unknown'
+dependencyStatus['autoconf']='unknown'
+dependencyStatus['pkg-config']='unknown'
+dependencyStatus['libssl-dev']='unknown'
+dependencyStatus['libboost-all-dev']='unknown'
+dependencyStatus['wget']='unknown'
+
+getDependencyStatus() {
+  if [[ 'unknown' == "${dependencyStatus["${1}"]}" ]]; then
+    echo -n "Checking for dependency \`${1}'... "
+    if dpkg-query -s "${1}" >/dev/null 2>&1; then
+      dependencyStatus["${1}"]='installed'
+      echo 'found!'
+    else
+      dependencyStatus["${1}"]='missing'
+      echo 'missing!'
+    fi
+  fi
+}
+
+installDependency() {
+  getDependencyStatus "${1}"
+  if [[ 'missing' == "${dependencyStatus["${1}"]}" ]]; then
+    if [[ 'no' == "${updated}" ]]; then
+      echo -n 'Updating apt cache... '
+      if apt-get update >/dev/null 2>&1; then
+        echo 'done!'
+        updated='yes'
+      else
+        echo 'error!'; return 1
+      fi
+    fi
+    echo -n "Installing dependency \`${1}'... "
+    if apt-get -y install "${1}" >/dev/null 2>&1; then
+      dependencyStatus["${1}"]='remove'
+      echo 'done!'
+    else
+      echo 'error!'; return 1
+    fi
+  fi
+  return 0
+}
+
+uninstallDependency() {
+  if [[ 'remove' == "${dependencyStatus["${1}"]}" ]]; then
+    echo -n "Uninstalling dependency \`${1}'... "
+    if apt-get -y --auto-remove purge "${1}" >/dev/null 2>&1; then
+      dependencyStatus["${1}"]='missing'
+      echo 'done!'
+    else
+      echo 'error!'; return 1
+    fi
+  fi
+  return 0
+}
+
+keepDependency() {
+  if [[ 'remove' == "${dependencyStatus["${1}"]}" ]]; then
+    echo "Keeping dependency \`${1}' installed"
+    dependencyStatus["${1}"]='installed'
+  fi
+}
+
+unkeepDependency() {
+  getDependencyStatus "${1}"
+  if [[ 'installed' == "${dependencyStatus["${1}"]}" ]]; then
+    echo "Marking dependency \`${1}' for uninstallation"
+    dependencyStatus["${1}"]='remove'
+  fi
+}
+
+
+installGetDependencies() {
+  installDependency 'wget'
+}
+
+installBuildDependencies() {
+  installDependency 'build-essential'  && \
+  installDependency 'libtool'          && \
+  installDependency 'autotools-dev'    && \
+  installDependency 'autoconf'         && \
+  installDependency 'pkg-config'       && \
+  installDependency 'libssl-dev'       && \
+  installDependency 'libboost-all-dev'
+}
+
+installRuntimeDependencies() {
+  installDependency 'libboost-all-dev'
+}
+
+uninstallDependencies() {
+  uninstallDependency 'build-essential'
+  uninstallDependency 'libtool'
+  uninstallDependency 'autotools-dev'
+  uninstallDependency 'autoconf'
+  uninstallDependency 'pkg-config'
+  uninstallDependency 'libssl-dev'
+  uninstallDependency 'libboost-all-dev'
+  uninstallDependency 'wget'
+}
+
+keepRuntimeDependencies() {
+  keepDependency 'libboost-all-dev'
+}
+
+keepBuildDependencies() {
+  keepDependency 'build-essential'  && \
+  keepDependency 'libtool'          && \
+  keepDependency 'autotools-dev'    && \
+  keepDependency 'autoconf'         && \
+  keepDependency 'pkg-config'       && \
+  keepDependency 'libssl-dev'       && \
+  keepDependency 'libboost-all-dev'
+}
+
+unkeepRuntimeDependencies() {
+  unkeepDependency 'libboost-all-dev'
+}
+
+
+declare -A directoryStatus
+directoryStatus['/var/lib/bitcoind']='unknown'
+directoryStatus['/etc/bitcoind']='unknown'
+
+getDirectoryStatus() {
+  if [[ 'unknown' == "${directoryStatus["${1}"]}" ]]; then
+    echo -n "Checking for directory \`${1}'... "
+    if [[ -d "${1}" ]]; then
+      directoryStatus["${1}"]='existing'
+      echo 'found!'
+    else
+      directoryStatus["${1}"]='missing'
+      echo 'missing!'
+    fi
+  fi
+}
+
+createDirectory() {
+  getDirectoryStatus "${1}"
+  if [[ 'missing' == "${directoryStatus["${1}"]}" ]]; then
+    echo -n "Creating directory \`${1}'... "
+    if mkdir -p "${1}"; then
+      directoryStatus["${1}"]='remove'
+      echo 'done!'
+    else
+      echo 'error!'; return 1
+    fi
+  fi
+  return 0
+}
+
+removeDirectory() {
+  if [[ 'remove' == "${directoryStatus["${1}"]}" ]]; then
+    echo -n "Removing directory \`${1}'... "
+    if rm -rf "${1}" >/dev/null 2>&1; then
+      directoryStatus["${1}"]='missing'
+      echo 'done!'
+    else
+      echo 'error!'; return 1
+    fi
+  fi
+  return 0
+}
+
+keepDirectory() {
+  if [[ 'remove' == "${directoryStatus["${1}"]}" ]]; then
+    echo "Keeping directory \`${1}'"
+    directoryStatus["${1}"]='existing'
+  fi
+}
+
+unkeepDirectory() {
+  getDirectoryStatus "${1}"
+  if [[ 'existing' == "${directoryStatus["${1}"]}" ]]; then
+    echo "Marking directory \`${1}' for removal"
+    directoryStatus["${1}"]='remove'
+  fi
+}
+
+
+createDirectories() {
+  createDirectory '/var/lib/bitcoind' && \
+  createDirectory '/etc/bitcoind'
+}
+
+removeDirectories() {
+  removeDirectory '/var/lib/bitcoind'
+  removeDirectory '/etc/bitcoind'
+}
+
+keepDirectories() {
+  keepDirectory '/var/lib/bitcoind'
+  keepDirectory '/etc/bitcoind'
+}
+
+unkeepDirectories() {
+  unkeepDirectory '/var/lib/bitcoind'
+  unkeepDirectory '/etc/bitcoind'
+}
+
+unkeepDirectoriesExceptBlockchain() {
+  unkeepDirectory '/etc/bitcoind'
+}
+
+declare -A fileStatus
+fileStatus['/etc/bitcoind/bitcoind.conf']='unknown'
+fileStatus['/usr/bin/bitcoind']='unknown'
+fileStatus['/usr/bin/bitcoin-cli']='unknown'
+fileStatus['/usr/bin/bitcoin-tx']='unknown'
+fileStatus['/usr/bin/bitcoind-init']='unknown'
+
+getFileStatus() {
+  if [[ 'unknown' == "${fileStatus["${1}"]}" ]]; then
+    echo -n "Checking for file \`${1}'... "
+    if [[ -f "${1}" ]]; then
+      fileStatus["${1}"]='existing'
+      echo 'found!'
+    else
+      fileStatus["${1}"]='missing'
+      echo 'missing!'
+    fi
+  fi
+}
+
+copyFile() {
+  getFileStatus "${1}"
+  if [[ 'missing' == "${fileStatus["${1}"]}" ]]; then
+    echo -n "Copying file \`${2}' to \`$(dirname "${1}")'... "
+    if cp "${2}" "$(dirname ${1})" >/dev/null 2>&1; then
+      fileStatus["${1}"]='remove'
+      echo 'done!'
+    else
+      echo 'error!'; return 1
+    fi
+  fi
+  return 0
+}
+
+removeFile() {
+  if [[ 'remove' == "${fileStatus["${1}"]}" ]]; then
+    echo -n "Removing file \`${1}'... "
+    if rm -f "${1}" >/dev/null 2>&1; then
+      fileStatus["${1}"]='missing'
+      echo 'done!'
+    else
+      echo 'error!'; return 1
+    fi
+  fi
+  return 0
+}
+
+keepFile() {
+  if [[ 'remove' == "${fileStatus["${1}"]}" ]]; then
+    echo "Keeping file \`${1}'"
+    fileStatus["${1}"]='existing'
+  fi
+}
+
+unkeepFile() {
+  getFileStatus "${1}"
+  if [[ 'existing' == "${fileStatus["${1}"]}" ]]; then
+    echo "Marking file \`${1}' for removal"
+    fileStatus["${1}"]='remove'
+  fi
+}
+
+
+copyFiles() {
+  copyFile '/etc/bitcoind/bitcoind.conf' "${installerDirectory}/bitcoind.conf" && \
+  copyFile '/usr/bin/bitcoind'           'bitcoin/src/bitcoind'                && \
+  copyFile '/usr/bin/bitcoin-cli'        'bitcoin/src/bitcoin-cli'             && \
+  copyFile '/usr/bin/bitcoin-tx'         'bitcoin/src/bitcoin-tx'              && \
+  copyFile '/usr/bin/bitcoind-init'      "${installerDirectory}/bitcoind-init"
+}
+
+deployFiles() {
+  copyFile '/etc/bitcoind/bitcoind.conf' 'bitcoind.conf' && \
+  copyFile '/usr/bin/bitcoind'           'bitcoind'      && \
+  copyFile '/usr/bin/bitcoin-cli'        'bitcoin-cli'   && \
+  copyFile '/usr/bin/bitcoin-tx'         'bitcoin-tx'    && \
+  copyFile '/usr/bin/bitcoind-init'      'bitcoind-init'
+}
+
+removeFiles() {
+  removeFile '/etc/bitcoind/bitcoind.conf'
+  removeFile '/usr/bin/bitcoind'
+  removeFile '/usr/bin/bitcoin-cli'
+  removeFile '/usr/bin/bitcoin-tx'
+  removeFile '/usr/bin/bitcoind-init'
+}
+
+keepFiles() {
+  keepFile '/etc/bitcoind/bitcoind.conf'
+  keepFile '/usr/bin/bitcoind'
+  keepFile '/usr/bin/bitcoin-cli'
+  keepFile '/usr/bin/bitcoin-tx'
+  keepFile '/usr/bin/bitcoind-init'
+}
+
+unkeepFiles() {
+  unkeepFile '/etc/bitcoind/bitcoind.conf'
+  unkeepFile '/usr/bin/bitcoind'
+  unkeepFile '/usr/bin/bitcoin-cli'
+  unkeepFile '/usr/bin/bitcoin-tx'
+  unkeepFile '/usr/bin/bitcoind-init'
+}
+
+verifyNoInstall() {
+  getFileStatus '/usr/bin/bitcoind'
+  getFileStatus '/usr/bin/bitcoin-cli'
+  getFileStatus '/usr/bin/bitcoin-tx'
+  getFileStatus '/usr/bin/bitcoind-init'
+
+  echo -n 'Checking for existing installation... '
+  if [[ 'existing' == "${fileStatus['/usr/bin/bitcoind']}"      \
+     || 'existing' == "${fileStatus['/usr/bin/bitcoin-cli']}"   \
+     || 'existing' == "${fileStatus['/usr/bin/bitcoin-tx']}"    \
+     || 'existing' == "${fileStatus['/usr/bin/bitcoind-init']}" ]]; then
+    echo 'previous installation found! Aborting!'
+    exit 1
+  else
+    echo 'no previous installation! OK!'
+  fi
+}
+
+
+declare -A userStatus
+userStatus['bitcoind']='unknown'
+
+getUserStatus() {
+  if [[ 'unknown' == "${userStatus["${1}"]}" ]]; then
+    echo -n "Checking for user \`${1}'... "
+    if getent passwd "${1}" >/dev/null 2>&1; then
+      userStatus["${1}"]='existing'
+      echo 'found!'
+    else
+      userStatus["${1}"]='missing'
+      echo 'missing!'
+    fi
+  fi
+}
+
+createUser() {
+  getUserStatus "${1}"
+  if [[ 'missing' == "${userStatus["${1}"]}" ]]; then
+    echo -n "Creating user \`${1}' (\`${2}')... "
+    if useradd --user-group --comment "${2}" --home-dir '/nonexistent' --expiredate '' --inactive -1 --system --shell '/usr/sbin/nologin' "${1}" >/dev/null 2>&1; then
+      userStatus["${1}"]='remove'
+      echo 'done!'
+    else
+      echo 'error!'; return 1
+    fi
+  fi
+  return 0
+}
+
+removeUser() {
+  if [[ 'remove' == "${userStatus["${1}"]}" ]]; then
+    echo -n "Removing user \`${1}'... "
+    if userdel -rf "${1}" >/dev/null 2>&1; then
+      userStatus["${1}"]='missing'
+      echo 'done!'
+    else
+      echo 'error!'; return 1
+    fi
+  fi
+  return 0
+}
+
+keepUser() {
+  if [[ 'remove' == "${userStatus["${1}"]}" ]]; then
+    echo "Keeping user \`${1}'"
+    userStatus["${1}"]='existing'
+  fi
+}
+
+unkeepUser() {
+  getUserStatus "${1}"
+  if [[ 'existing' == "${userStatus["${1}"]}" ]]; then
+    echo "Marking user \`${1}' for removal"
+    userStatus["${1}"]='remove'
+  fi
+}
+
+
+createUsers() {
+  createUser 'bitcoind' 'BitCoin Core Daemon'
+}
+
+removeUsers() {
+  removeUser 'bitcoind'
+}
+
+keepUsers()  {
+  keepUser 'bitcoind'
+}
+
+unkeepUsers()  {
+  unkeepUser 'bitcoind'
+}
+
+
+################################################################################
+
+cleanup() {
+  removeFiles
+  removeDirectories
+  removeUsers
+  uninstallDependencies
+  returnAndRemoveTemporary
+  echo; echo "Finished - time elapsed: $(timeDifference "${startTime}" "$(date +'%s')")"
+  trap EXIT
+}
+trap cleanup EXIT
+
+################################################################################
+
+getBerkleyDb() {
+  local berkleyDbFilename='db-4.8.30.NC'
+  local berkleyDbSha256='12edc0df75bf9abd7f82f821795bcee50f42cb2e5f76a6a281b85732798364ef'
+
+  if ! installGetDependencies; then return 1; fi
+
+  echo -n 'Downloading BerkleyDB... '
+  if ! wget --no-verbose --quiet "http://download.oracle.com/berkeley-db/${berkleyDbFilename}.tar.gz"; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Verifying BerkleyDB... '
+  if ! echo "${berkleyDbSha256}  ${berkleyDbFilename}.tar.gz" | sha256sum --check --status; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Untaring BerkleyDB... '
+  if ! tar xzf "${berkleyDbFilename}.tar.gz" >/dev/null 2>&1; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Removing downloaded tarfile... '
+  if ! rm -f "${berkleyDbFilename}.tar.gz" >/dev/null 2>&1; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Moving BerkleyDB... '
+  if ! mv -f "${berkleyDbFilename}" 'berkleydb'; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  return 0
+}
+
+getBitCoin() {
+  local tagName=''
+
+  if ! installGetDependencies; then return 1; fi
+
+  tagName="${1:-master}"; tagName="${tagName##v}"
+  if [[ 'master' != "${tagName}" ]]; then
+    tagName="v${tagName}"
+  fi
+
+  echo -n "Downloading BitCoin (${tagName})... "
+  if ! wget --no-verbose --quiet "https://github.com/bitcoin/bitcoin/archive/${tagName}.tar.gz"; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Untaring BitCoin... '
+  if ! tar xzf "${tagName}.tar.gz" >/dev/null 2>&1; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Removing downloaded tarfile... '
+  if ! rm -f "${tagName}.tar.gz" >/dev/null 2>&1; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Moving BitCoin... '
+  if ! mv -f "bitcoin-${tagName}" 'bitcoin'; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  return 0
+}
+
+getAll() {
+  getBerkleyDb  && \
+  getBitCoin "${1}"
+}
+
+
+buildBerkleyDb() {
+  if ! installBuildDependencies; then return 1; fi
+
+  cd 'berkleydb/build_unix'
+
+  echo -n 'Configuring BerkleyDB... '
+  if ! ../dist/configure --enable-cxx --enable-static --disable-shared --with-pic --prefix="$(readlink -qf ../build)" >/dev/null 2>&1; then
+    echo 'failed!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Building BerkleyDB... '
+  if ! make install >/dev/null 2>&1; then
+    echo 'failed!'; return 1
+  fi
+  echo 'done!'
+
+  cd '../..'
+
+  return 0
+}
+
+buildBitCoin() {
+  if ! installBuildDependencies; then return 1; fi
+
+  cd 'bitcoin'
+
+  echo -n 'Autogenerating BitCoin configure script... '
+  if ! ./autogen.sh >/dev/null 2>&1; then
+    echo 'failed!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Configuring BitCoin... '
+  if ! ./configure --enable-static --disable-shared --without-miniupnpc --enable-hardening --with-pic --with-gui=no LDFLAGS="-L$(readlink -qe ../berkleydb/build/lib)" CPPFLAGS="-I$(readlink -qe ../berkleydb/build/include)" --prefix="$(readlink -qf 'build')" >/dev/null 2>&1; then
+    echo 'failed!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Building BitCoin... '
+  if ! make >/dev/null 2>&1; then
+    echo 'failed!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Stripping executables... '
+  for exec in $(find -O3 src -maxdepth 1 -type f -executable -exec bash -c "file {} | grep -qe'BuildID'" \; -exec readlink -qe {} \;); do
+    if ! strip -sx -R .comment -R .note "${exec}"; then
+      echo 'failed!'; return 1
+    fi
+  done
+  echo 'done!'
+
+  cd '..'
+
+  return 0
+}
+
+buildAll() {
+  buildBerkleyDb  && \
+  buildBitCoin
+}
+
+
+installBitCoin() {
+  verifyNoInstall
+
+  local installType="${1:-source}"
+  installType="${installType,,}"
+  case "${installType}" in
+    'source'|'deploy') ;;
+    *)  echo "Unrecognized install type \`${1}'! Aborting!"; return 1 ;;
+  esac
+
+  if installRuntimeDependencies && createUsers && createDirectories; then
+    if   [[ 'source' == "${installType}" ]]; then if !   copyFiles; then return 1; fi
+    elif [[ 'deploy' == "${installType}" ]]; then if ! deployFiles; then return 1; fi
+    fi
+
+    echo -n 'Changing ownerships... '
+    if chown -f 'bitcoind:bitcoind' '/var/lib/bitcoind'           && \
+       chown -f 'bitcoind:bitcoind' '/etc/bitcoind'               && \
+       chown -f 'bitcoind:bitcoind' '/etc/bitcoind/bitcoind.conf' && \
+       chown -f 'bitcoind:bitcoind' '/usr/bin/bitcoind'           && \
+       chown -f 'bitcoind:bitcoind' '/usr/bin/bitcoin-cli'        && \
+       chown -f 'bitcoind:bitcoind' '/usr/bin/bitcoin-tx'         && \
+       chown -f 'root:root'         '/usr/bin/bitcoind-init'; then
+      echo 'done!'
+
+      echo -n 'Changing permissions... '
+      if chmod -f 'u=rwxs,g=s,o=t' '/var/lib/bitcoind'           && \
+         chmod -f 'u=r,go='        '/etc/bitcoind/bitcoind.conf' && \
+         chmod -f 'u=rxs,g=s,o=t'  '/etc/bitcoind'               && \
+         chmod -f 'u=xs,g=xs,o='   '/usr/bin/bitcoind'           && \
+         chmod -f 'u=xs,g=xs,o='   '/usr/bin/bitcoin-cli'        && \
+         chmod -f 'u=xs,g=xs,o='   '/usr/bin/bitcoin-tx'         && \
+         chmod -f 'u=x,g=x,o='     '/usr/bin/bitcoind-init'; then
+         echo 'done!'
+         return 0
+      fi
+    fi
+    echo 'error!'
+  fi
+
+  return 1
+}
+
+
+prepareDeploy() {
+  local tarball
+  local deployName="${1:-bitcoind-deploy}"
+
+  echo -n 'Creating deploy directory... '
+  if ! mkdir -p 'deploy'; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Copying files to deploy directory... '
+  if ! cp --target-directory=deploy         \
+      "${installerDirectory}/bitcoind.conf" \
+      "${installerDirectory}/bitcoind-init" \
+      'bitcoin/src/bitcoind'                \
+      'bitcoin/src/bitcoin-cli'             \
+      'bitcoin/src/bitcoin-tx'; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  cd 'deploy'
+
+  echo -n 'Taring deploy files... '
+  tarball="$(tar czf 'deploy.tar.gz' 'bitcoind.conf' 'bitcoind-init' 'bitcoind' 'bitcoin-cli' 'bitcoin-tx')"
+  if (( 0 != $? )); then
+    echo 'error!'; cd '..'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Building deploy script... '
+  if ! createDeployStub > "${deployName}"; then
+    echo 'error!'; cd '..'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Appending payload... '
+  if ! base64 'deploy.tar.gz' >> "${deployName}"; then
+    echo 'error!'; cd '..'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Changing permissions... '
+  if ! chmod +x "${deployName}"; then
+    echo 'error!'; cd '..'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Copying deploy script... '
+  if ! cp --target-directory="${originalDirectory}" "${deployName}"; then
+    echo 'error!'; cd '..'; return 1
+  fi
+  echo 'done!'; cd '..'
+
+  return 0
+}
+
+extractPayload() {
+  local thisFile="$(readlink -qe "${0}")"
+  local boundary="${1}"
+
+  if [[ '' == "${boundary}" ]]; then
+    echo 'No boundary provided!'; return 1
+  fi
+
+  local offset="$(grep -xne"${boundary}" "${thisFile}" | cut -d: -f1)"
+
+  tail -n +$(( offset + 1 )) "${thisFile}"
+}
+
+untarPayload() {
+  extractPayload "${1}" | base64 -d | tar xz
+}
+
+doDeploy() {
+  echo -n 'Untaring payload... '
+  if ! untarPayload "${1}" >/dev/null 2>&1; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  if ! installBitCoin 'deploy'; then
+    cd '..'; return 1
+  fi
+
+  return 0
+}
+
+createDeployStub() {
+  local stub="$(cat <<EOF
+#! /bin/bash
+
+################################################################################
+
+(( startTime = "\$(date +'%s')" ))
+$(declare -f timeDifference)
+
+################################################################################
+
+temporaryDir=''
+$(declare -f createTemporaryAndCd)
+$(declare -f returnAndRemoveTemporary)
+
+################################################################################
+
+declare -A dependencyStatus
+dependencyStatus['build-essential']='unknown'
+dependencyStatus['libtool']='unknown'
+dependencyStatus['autotools-dev']='unknown'
+dependencyStatus['autoconf']='unknown'
+dependencyStatus['pkg-config']='unknown'
+dependencyStatus['libssl-dev']='unknown'
+dependencyStatus['libboost-all-dev']='unknown'
+dependencyStatus['wget']='unknown'
+
+$(declare -f getDependencyStatus)
+$(declare -f installDependency)
+$(declare -f uninstallDependency)
+$(declare -f keepDependency)
+$(declare -f installRuntimeDependencies)
+$(declare -f uninstallDependencies)
+$(declare -f keepRuntimeDependencies)
+
+
+declare -A directoryStatus
+directoryStatus['/var/lib/bitcoind']='unknown'
+directoryStatus['/etc/bitcoind']='unknown'
+
+$(declare -f getDirectoryStatus)
+$(declare -f createDirectory)
+$(declare -f createDirectories)
+$(declare -f removeDirectory)
+$(declare -f removeDirectories)
+
+
+declare -A fileStatus
+fileStatus['/etc/bitcoind/bitcoind.conf']='unknown'
+fileStatus['/usr/bin/bitcoind']='unknown'
+fileStatus['/usr/bin/bitcoin-cli']='unknown'
+fileStatus['/usr/bin/bitcoin-tx']='unknown'
+fileStatus['/usr/bin/bitcoind-init']='unknown'
+
+$(declare -f getFileStatus)
+$(declare -f copyFile)
+$(declare -f deployFiles)
+$(declare -f removeFile)
+$(declare -f removeFiles)
+$(declare -f verifyNoInstall)
+
+
+declare -A userStatus
+userStatus['bitcoind']='unknown'
+
+$(declare -f getUserStatus)
+$(declare -f createUser)
+$(declare -f createUsers)
+$(declare -f removeUser)
+$(declare -f removeUsers)
+
+################################################################################
+
+$(declare -f cleanup)
+trap cleanup EXIT
+
+################################################################################
+
+$(declare -f installBitCoin)
+$(declare -f extractPayload)
+$(declare -f untarPayload)
+$(declare -f doDeploy)
+
+################################################################################
+
+main() {
+  if ! createTemporaryAndCd; then return 1; fi
+  if doDeploy "\${1}"; then
+    keepRuntimeDependencies
+    keepDirectories
+    keepFiles
+    keepUsers
+  else return 1; fi
+  return 0
+}
+
+if ! main '__DEPLOY_BOUNDARY__'; then echo 'Errors were encountered! Aborting!'; exit 1; else exit 0; fi
+
+__DEPLOY_BOUNDARY__
+
+EOF
+)"
+
+  echo "${stub//__DEPLOY_BOUNDARY__/$(tr -cd a-zA-Z0-9 < /dev/urandom | head -c32)}"
+}
+
+################################################################################
+
+showUsage() {
+  case "${1,,}" in
+    'get') cat <<USAGE
+Usage: ${scriptName} get [-t TAG | --tag TAG]
+  or:  ${scriptName} get [-h | --help]
+
+This action will:
+    - fetch the BitCoin source and save it in the \`bitcoin' directory under
+      the current one,
+    - fetch the BerkleyDB source and savbe it in the \`berkleydb' directory
+      under the current one, and
+    - install all the build dependencies (currently: \`build-essential',
+      \`libtool', \`autotools-dev', \`autoconf', \`pkg-config', \`libssl-dev', and
+      \`libboost-all-dev').
+
+If no TAG is given, the \`master' tag is fetched.
+
+NOTES:
+  - Build dependencies WILL NOT be removed.
+
+
+The only options accepted by action \`get' are:
+    -t TAG, --tag TAG    BitCoin Git tag to fetch
+    -h, --help           Show this help
+
+USAGE
+      ;;
+    'make') cat <<USAGE
+Usage: ${scriptName} make [-t TAG | --tag TAG]
+  or:  ${scriptName} make [-h | --help]
+
+This action will:
+    - perform a \`get' action, followed by
+    - compile BerkleyDB, and
+    - compile BitCoin using the above BerkleyDB version.
+
+If no TAG is given, the \`master' tag is fetched.
+
+NOTES:
+  - Build dependencies WILL NOT be removed.
+
+
+The only options accepted by action \`make' are:
+    -t TAG, --tag TAG    BitCoin Git tag to fetch
+    -h, --help           Show this help
+
+USAGE
+      ;;
+    'install') cat <<USAGE
+Usage: ${scriptName} install [-t TAG | --tag TAG]
+  or:  ${scriptName} install [-h | --help]
+
+This action will:
+    - perform a \`get' action,
+    - perform a \`make' action,
+    - install the needed runtime dependencies (currently: \`libboost-all-dev'),
+    - create a \`bitcoind' system user without login,
+    - create the \`/var/lib/bitcoind' and the \`/etc/bitcoind' directories,
+    - create an empty (ie. COMPLETELY USELESS) configuration file at
+      \`/etc/bitcoind/bitcoin.conf',
+    - copy the \`bitcoind', \`bitcoin-cli', and \`bitcoin-tx' executables to
+      \`/usr/bin',
+    - copy the init-system-agnostic init script \`bitcoind-init' to \`/usr/bin',
+      and
+    - change ownership, group-ownership, and permissions of all the created
+      and copied files and directories.
+
+If no TAG is given, the \`master' tag is fetched.
+
+NOTES:
+  - Build dependencies WILL be removed.
+  - Runtime dependencies WILL NOT be removed.
+
+
+The only options accepted by action \`install' are:
+    -t TAG, --tag TAG    BitCoin Git tag to fetch
+    -h, --help           Show this help
+
+USAGE
+      ;;
+    'prepare') cat <<USAGE
+Usage: ${scriptName} prepare [-t TAG | --tag TAG]
+                             [-f FILE | --file FILE]
+  or:  ${scriptName} prepare [-h | --help]
+
+This action will:
+    - perform a \`get' action,
+    - perform a \`make' action,
+    - create a tarball with the \`bitcoind', \`bitcoin-cli', \`bitcoin-tx',
+      the empty (ie. COMPLETELY USELESS) configuration file \`bitcoind.conf',
+      and the init-system-agnostic init script \`bitcoind-init', and
+    - with that tarball create a self-extracting script to use for deployment.
+
+If no TAG is given, the \`master' tag is fetched.
+If no FILE is given, \`bitcoind-deploy' is used.
+
+NOTES:
+  - Build dependencies WILL be removed.
+
+
+The only options accepted by action \`prepare' are:
+    -t TAG, --tag TAG       BitCoin Git tag to fetch
+    -f FILE, --file FILE    File to use for the self-extracting file
+    -h, --help              Show this help
+
+USAGE
+      ;;
+    'uninstall') cat <<USAGE
+Usage: ${scriptName} uninstall [-r | --remove-runtime-dependencies]
+  or:  ${scriptName} uninstall [-h | --help]
+
+This action will:
+    - remove the executables and config files, and
+    - remove the \`/etc/bitcoind' directory.
+
+Optionally, runtime dependencies (currently: \`libboost-all-dev') may
+be uninstalled.
+
+NOTES:
+  - Runtime dependencies MAY remain installed.
+  - The \`bitcoind' user WILL NOT be removed.
+  - The blockchain at \`/var/lib/bitcoind' WILL NOT be removed.
+
+
+The only options accepted by action \`uninstall' are:
+    -r, --remove-runtime-dependencies
+                            Remove runtime dependencies
+    -h, --help    Show this help
+
+USAGE
+      ;;
+    'purge') cat <<USAGE
+Usage: ${scriptName} purge [-r | --remove-runtime-dependencies]
+  or:  ${scriptName} purge [-h | --help]
+
+This action will:
+    - remove the executables and config files,
+    - remove the \`/etc/bitcoind' and \`/var/lib/bitcoind' directories, and
+    - remove the \`bitcoind' user.
+
+Optionally, runtime dependencies (currently: \`libboost-all-dev') may
+be uninstalled.
+
+NOTES:
+  - Runtime dependencies MAY remain installed.
+  - The \`bitcoind' user WILL be removed.
+  - The blockchain at \`/var/lib/bitcoind' WILL be removed.
+
+
+The only options accepted by action \`purge' are:
+    -r, --remove-runtime-dependencies
+                            Remove runtime dependencies
+    -h, --help    Show this help
+
+USAGE
+      ;;
+    *) cat <<USAGE
+Usage: ${scriptName} ACTION [OPTIONS...]
+  or:  ${scriptName} --help
+
+  ACTION is one of (case insensitive):
+    get        Fetch the bitcoin source, BerkleyDB source, and
+                 build dependencies
+    make       Get and compile the bitcoin distribution and dependencies
+    install    Make and install the binary files
+    prepare    Make and pack the executables for deployment
+    uninstall  Remove most of the files installed, but keep the user and
+                 the downloaded blockchain
+    purge      Remove everything, blockchain and user included
+
+  OPTIONS may be:
+    -t TAG, --tag TAG       BitCoin Git tag to fetch (only for actions \`get',
+                                \`make', \`install', and \`prepare')
+    -f FILE, --file FILE    File to use for the tarball (only for action
+                                \`prepare')
+    -r, --remove-runtime-dependencies
+                            Remove runtime dependencies (only for actions
+                                \`uninstall', and \`purge')
+
+    -h, --help    If no action given, show this help, otherwise show an
+                      action-specific help
+
+USAGE
+      ;;
+  esac
+}
+
+showNotice() {
+  echo "Errors where encountered, try calling \`${scriptName} --help'!"
+}
+
+checkTag() {
+  case "${1,,}" in
+    'get'|'make'|'install'|'prepare')                             return 0 ;;
+    *) echo "No file specification recognized for action \`${1}'"; return 1 ;;
+  esac
+}
+
+checkTar() {
+  case "${1,,}" in
+    'prepare')                                                    return 0 ;;
+    *) echo "No tag specification recognized for action \`${1}'"; return 1 ;;
+  esac
+}
+
+checkRrd() {
+  case "${1,,}" in
+    'uninstall'|'purge')                                                                  return 0 ;;
+    *) echo "No runtime remove dependencies specification recognized for action \`${1}'"; return 1 ;;
+  esac
+}
+
+parseOptions() {
+  local actionStr="${1}"
+  local failed=''
+
+  tag=''
+  tarFile=''
+  removeRuntimeDependencies=''
+
+  action="${actionStr,,}"
+  help=''
+
+  shift
+
+  case "${action}" in
+    'get'|'make'|'install'|'prepare'|'deploy'|'uninstall'|'purge') : ;;
+    '-h'|'--help') action=''; help='help'; return 0 ;;
+    ?*) echo "Unrecognized action \`${actionStr}'!"; action=''; return 1 ;;
+    *)  echo 'No action provided!'                 ; action=''; return 1 ;;
+  esac
+
+  while (( $# > 0 )); do
+    case "${1}" in
+      '-t')      if checkTag "${actionStr}"; then shift; tag="${1:-${tag}}"; else failed='failed'; fi ;;
+      '-t='*)    if checkTag "${actionStr}"; then        tag="${1#-t=}"    ; else failed='failed'; fi ;;
+      '-t'*)     if checkTag "${actionStr}"; then        tag="${1#-t}"     ; else failed='failed'; fi ;;
+      '--tag')   if checkTag "${actionStr}"; then shift; tag="${1:-${tag}}"; else failed='failed'; fi ;;
+      '--tag='*) if checkTag "${actionStr}"; then        tag="${1#--tag=}" ; else failed='failed'; fi ;;
+      '--tag'*)  if checkTag "${actionStr}"; then        tag="${1#--tag}"  ; else failed='failed'; fi ;;
+      #
+      '-f')       if checkTar "${actionStr}"; then shift; tarFile="${1:-${tarFile}}"; else failed='failed'; fi ;;
+      '-f='*)     if checkTar "${actionStr}"; then        tarFile="${1#-f=}"        ; else failed='failed'; fi ;;
+      '-f'*)      if checkTar "${actionStr}"; then        tarFile="${1#-f}"         ; else failed='failed'; fi ;;
+      '--file')   if checkTar "${actionStr}"; then shift; tarFile="${1:-${tarFile}}"; else failed='failed'; fi ;;
+      '--file='*) if checkTar "${actionStr}"; then        tarFile="${1#--file=}"    ; else failed='failed'; fi ;;
+      '--file'*)  if checkTar "${actionStr}"; then        tarFile="${1#--file}"     ; else failed='failed'; fi ;;
+      #
+      '-r')                            if checkRrd "${actionStr}"; then removeRuntimeDependencies='remove'; else failed='failed'; fi ;;
+      '--remove-runtime-dependencies') if checkRrd "${actionStr}"; then removeRuntimeDependencies='remove'; else failed='failed'; fi ;;
+      #
+      '-h'|'--help') help='help'; return 0 ;;
+      #
+      *) echo "Unrecognized option \`${1}'!"; failed='failed' ;;
+    esac
+    shift
+  done
+
+  if [[ '' != "${failed}" ]]; then return 1; fi
+
+  tag="${tag:-master}"
+  tarFile="${tarFile%%.tar.gz}"
+  tarFile="${tarFile:-bitcoind-deploy}"
+}
+
+
+main() {
+  if ! parseOptions "${@}"; then return 1; fi
+
+  if [[ '' != "${help}" ]]; then showUsage "${action}"; return 0; fi
+
+  case "${action}" in
+    'get')
+      if getAll "${tag}" && installBuildDependencies; then
+        keepBuildDependencies
+      else return 1; fi ;;
+    'make')
+      if getAll "${tag}" && buildAll; then
+        keepBuildDependencies
+      else return 1; fi ;;
+    'install')
+      if ! createTemporaryAndCd; then return 1; fi
+      if getAll "${tag}" && buildAll && installBitCoin; then
+        keepRuntimeDependencies
+        keepDirectories
+        keepFiles
+        keepUsers
+      else return 1; fi ;;
+    'prepare')
+      if ! createTemporaryAndCd; then return 1; fi
+      if getAll "${tag}" && buildAll && prepareDeploy "${tarFile}"; then
+        :
+      else return 1; fi ;;
+    'uninstall')
+      unkeepFiles
+      unkeepDirectoriesExceptBlockchain
+      if [[ 'remove' == "${removeRuntimeDependencies}" ]]; then
+        unkeepRuntimeDependencies
+      fi
+      ;;
+    'purge')
+      unkeepFiles
+      unkeepDirectories
+      unkeepUsers
+      if [[ 'remove' == "${removeRuntimeDependencies}" ]]; then
+        unkeepRuntimeDependencies
+      fi
+      ;;
+  esac
+
+  return 0
+}
+
+
+if ! main "${@}"; then showNotice; exit 1; else exit 0; fi
