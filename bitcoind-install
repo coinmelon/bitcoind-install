@@ -655,8 +655,10 @@ installBitCoin() {
 
 
 prepareDeploy() {
-  local tarball
-  local deployName="${1:-bitcoind-deploy}"
+  local tarballName="${1:-bitcoind-deploy}"
+  tarballName="$(realpath "${tarballName}")"
+  tarballName="${tarballName##*/}"
+  tarballName="${tarballName%%.*}.tar.gz"
 
   echo -n 'Creating deploy directory... '
   if ! mkdir -p 'deploy'; then
@@ -678,60 +680,54 @@ prepareDeploy() {
   cd 'deploy'
 
   echo -n 'Taring deploy files... '
-  tarball="$(tar czf 'deploy.tar.gz' 'bitcoind.conf' 'bitcoind-init' 'bitcoind' 'bitcoin-cli' 'bitcoin-tx')"
-  if (( 0 != $? )); then
+  if ! tar czf "${tarballName}" \
+      'bitcoind.conf'           \
+      'bitcoind-init'           \
+      'bitcoind'                \
+      'bitcoin-cli'             \
+      'bitcoin-tx'; then
     echo 'error!'; cd '..'; return 1
   fi
   echo 'done!'
 
-  echo -n 'Building deploy script... '
-  if ! createDeployStub > "${deployName}"; then
+  echo -n 'Copying deploy tarball... '
+  if ! cp --target-directory="${originalDirectory}" "${tarballName}"; then
     echo 'error!'; cd '..'; return 1
   fi
   echo 'done!'
 
-  echo -n 'Appending payload... '
-  if ! base64 'deploy.tar.gz' >> "${deployName}"; then
-    echo 'error!'; cd '..'; return 1
-  fi
-  echo 'done!'
-
-  echo -n 'Changing permissions... '
-  if ! chmod +x "${deployName}"; then
-    echo 'error!'; cd '..'; return 1
-  fi
-  echo 'done!'
-
-  echo -n 'Copying deploy script... '
-  if ! cp --target-directory="${originalDirectory}" "${deployName}"; then
-    echo 'error!'; cd '..'; return 1
-  fi
-  echo 'done!'; cd '..'
-
-  return 0
-}
-
-extractPayload() {
-  local thisFile="$(readlink -qe "${0}")"
-  local boundary="${1}"
-
-  if [[ '' == "${boundary}" ]]; then
-    echo 'No boundary provided!'; return 1
-  fi
-
-  local offset="$(grep -xne"${boundary}" "${thisFile}" | cut -d: -f1)"
-
-  tail -n +$(( offset + 1 )) "${thisFile}"
-}
-
-untarPayload() {
-  extractPayload "${1}" | base64 -d | tar xz
+  cd '..'
 }
 
 doDeploy() {
-  echo -n 'Untaring payload... '
-  if ! untarPayload "${1}" >/dev/null 2>&1; then
+  local tarballName="${1:-bitcoind-deploy}"
+  tarballName="$(realpath "${tarballName}")"
+  tarballName="${tarballName##*/}"
+  tarballName="${tarballName%%.*}.tar.gz"
+
+  echo -n "Checking for tarball (${tarballName})... "
+  if [[ ! -f "${originalDirectory}/${tarballName}" ]]; then
+    echo 'missing!'; return 1
+  fi
+  echo 'found!'
+
+  echo -n 'Creating deploy directory... '
+  if ! mkdir -p 'deploy'; then
     echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  echo -n 'Copying tarball to deploy directory... '
+  if ! cp --target-directory=deploy "${originalDirectory}/${tarballName}"; then
+    echo 'error!'; return 1
+  fi
+  echo 'done!'
+
+  cd 'deploy'
+
+  echo -n 'Untaring tarball... '
+  if ! tar xzf "${tarballName}" >/dev/null 2>&1; then
+    ehco 'error!'; cd '..'; return 1
   fi
   echo 'done!'
 
@@ -740,112 +736,6 @@ doDeploy() {
   fi
 
   return 0
-}
-
-createDeployStub() {
-  local stub="$(cat <<EOF
-#! /bin/bash
-
-################################################################################
-
-(( startTime = "\$(date +'%s')" ))
-$(declare -f timeDifference)
-
-################################################################################
-
-temporaryDir=''
-$(declare -f createTemporaryAndCd)
-$(declare -f returnAndRemoveTemporary)
-
-################################################################################
-
-declare -A dependencyStatus
-dependencyStatus['build-essential']='unknown'
-dependencyStatus['libtool']='unknown'
-dependencyStatus['autotools-dev']='unknown'
-dependencyStatus['autoconf']='unknown'
-dependencyStatus['pkg-config']='unknown'
-dependencyStatus['libssl-dev']='unknown'
-dependencyStatus['libboost-all-dev']='unknown'
-dependencyStatus['wget']='unknown'
-
-$(declare -f getDependencyStatus)
-$(declare -f installDependency)
-$(declare -f uninstallDependency)
-$(declare -f keepDependency)
-$(declare -f installRuntimeDependencies)
-$(declare -f uninstallDependencies)
-$(declare -f keepRuntimeDependencies)
-
-
-declare -A directoryStatus
-directoryStatus['/var/lib/bitcoind']='unknown'
-directoryStatus['/etc/bitcoind']='unknown'
-
-$(declare -f getDirectoryStatus)
-$(declare -f createDirectory)
-$(declare -f createDirectories)
-$(declare -f removeDirectory)
-$(declare -f removeDirectories)
-
-
-declare -A fileStatus
-fileStatus['/etc/bitcoind/bitcoind.conf']='unknown'
-fileStatus['/usr/bin/bitcoind']='unknown'
-fileStatus['/usr/bin/bitcoin-cli']='unknown'
-fileStatus['/usr/bin/bitcoin-tx']='unknown'
-fileStatus['/usr/bin/bitcoind-init']='unknown'
-
-$(declare -f getFileStatus)
-$(declare -f copyFile)
-$(declare -f deployFiles)
-$(declare -f removeFile)
-$(declare -f removeFiles)
-$(declare -f verifyNoInstall)
-
-
-declare -A userStatus
-userStatus['bitcoind']='unknown'
-
-$(declare -f getUserStatus)
-$(declare -f createUser)
-$(declare -f createUsers)
-$(declare -f removeUser)
-$(declare -f removeUsers)
-
-################################################################################
-
-$(declare -f cleanup)
-trap cleanup EXIT
-
-################################################################################
-
-$(declare -f installBitCoin)
-$(declare -f extractPayload)
-$(declare -f untarPayload)
-$(declare -f doDeploy)
-
-################################################################################
-
-main() {
-  if ! createTemporaryAndCd; then return 1; fi
-  if doDeploy "\${1}"; then
-    keepRuntimeDependencies
-    keepDirectories
-    keepFiles
-    keepUsers
-  else return 1; fi
-  return 0
-}
-
-if ! main '__DEPLOY_BOUNDARY__'; then echo 'Errors were encountered! Aborting!'; exit 1; else exit 0; fi
-
-__DEPLOY_BOUNDARY__
-
-EOF
-)"
-
-  echo "${stub//__DEPLOY_BOUNDARY__/$(tr -cd a-zA-Z0-9 < /dev/urandom | head -c32)}"
 }
 
 ################################################################################
@@ -937,14 +827,13 @@ Usage: ${scriptName} prepare [-t TAG | --tag TAG]
 
 This action will:
     - perform a \`get' action,
-    - perform a \`make' action,
-    - create a tarball with the \`bitcoind', \`bitcoin-cli', \`bitcoin-tx',
-      the empty (ie. COMPLETELY USELESS) configuration file \`bitcoind.conf',
-      and the init-system-agnostic init script \`bitcoind-init', and
-    - with that tarball create a self-extracting script to use for deployment.
+    - perform a \`make' action, and
+    - create a tarball with the \`bitcoind', \`bitcoin-cli', \`bitcoin-tx', the
+      empty (ie. COMPLETELY USELESS) configuration file \`bitcoind.conf', and
+      the init-system-agnostic init script \`bitcoind-init'.
 
 If no TAG is given, the \`master' tag is fetched.
-If no FILE is given, \`bitcoind-deploy' is used.
+If no FILE is given, \`bitcoind-deploy.tar.gz' is used.
 
 NOTES:
   - Build dependencies WILL be removed.
@@ -952,7 +841,27 @@ NOTES:
 
 The only options accepted by action \`prepare' are:
     -t TAG, --tag TAG       BitCoin Git tag to fetch
-    -f FILE, --file FILE    File to use for the self-extracting file
+    -f FILE, --file FILE    File to use for the tarball
+    -h, --help              Show this help
+
+USAGE
+      ;;
+    'deploy') cat <<USAGE
+Usage: ${scriptName} deploy [-f FILE | --file FILE]
+  or:  ${scriptName} deploy [-h | --help]
+
+This action will:
+    - extract the contents of the tarball, and
+    - perform an \`install' action (without the \`get' / \`make' steps).
+
+If no FILE is given, \`bitcoind-deploy.tar.gz' is used.
+
+NOTES:
+  - Runtime dependencies WILL remain installed.
+
+
+The only options accepted by action \`deploy' are:
+    -f FILE, --file FILE    File to use for the tarball
     -h, --help              Show this help
 
 USAGE
@@ -1016,6 +925,7 @@ Usage: ${scriptName} ACTION [OPTIONS...]
     make       Get and compile the bitcoin distribution and dependencies
     install    Make and install the binary files
     prepare    Make and pack the executables for deployment
+    deploy     Deploy the packed executables and install
     uninstall  Remove most of the files installed, but keep the user and
                  the downloaded blockchain
     purge      Remove everything, blockchain and user included
@@ -1023,8 +933,8 @@ Usage: ${scriptName} ACTION [OPTIONS...]
   OPTIONS may be:
     -t TAG, --tag TAG       BitCoin Git tag to fetch (only for actions \`get',
                                 \`make', \`install', and \`prepare')
-    -f FILE, --file FILE    File to use for the tarball (only for action
-                                \`prepare')
+    -f FILE, --file FILE    File to use for the tarball (only for actions
+                                \`prepare', and \`deploy')
     -r, --remove-runtime-dependencies
                             Remove runtime dependencies (only for actions
                                 \`uninstall', and \`purge')
@@ -1043,14 +953,14 @@ showNotice() {
 
 checkTag() {
   case "${1,,}" in
-    'get'|'make'|'install'|'prepare')                             return 0 ;;
+    'prepare'|'deploy')                                            return 0 ;;
     *) echo "No file specification recognized for action \`${1}'"; return 1 ;;
   esac
 }
 
 checkTar() {
   case "${1,,}" in
-    'prepare')                                                    return 0 ;;
+    'get'|'make'|'install'|'prepare')                             return 0 ;;
     *) echo "No tag specification recognized for action \`${1}'"; return 1 ;;
   esac
 }
@@ -1142,6 +1052,14 @@ main() {
       if ! createTemporaryAndCd; then return 1; fi
       if getAll "${tag}" && buildAll && prepareDeploy "${tarFile}"; then
         :
+      else return 1; fi ;;
+    'deploy')
+      if ! createTemporaryAndCd; then return 1; fi
+      if doDeploy "${tarFile}"; then
+        keepRuntimeDependencies
+        keepDirectories
+        keepFiles
+        keepUsers
       else return 1; fi ;;
     'uninstall')
       unkeepFiles
