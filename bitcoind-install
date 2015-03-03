@@ -656,7 +656,7 @@ installBitCoin() {
 
 prepareDeploy() {
   local tarballName="${1:-bitcoind-deploy}"
-  tarballName="$(realpath "${tarballName}")"
+  tarballName="$(readlink -qf "${tarballName}")"
   tarballName="${tarballName##*/}"
   tarballName="${tarballName%%.*}.tar.gz"
 
@@ -701,7 +701,7 @@ prepareDeploy() {
 
 doDeploy() {
   local tarballName="${1:-bitcoind-deploy}"
-  tarballName="$(realpath "${tarballName}")"
+  tarballName="$(readlink -qf "${tarballName}")"
   tarballName="${tarballName##*/}"
   tarballName="${tarballName%%.*}.tar.gz"
 
