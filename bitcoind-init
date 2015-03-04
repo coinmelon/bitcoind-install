@@ -139,9 +139,7 @@ doStart() {
     echo "Unknown forcing specification \`${1}'!"
   fi
 
-  if ! startBitcoind; then
-    echo 'error!'; return 1
-  fi
+  if ! startBitcoind; then return 1; fi
 
   echo -n "Waiting for \`bitcoind' to load... "
   for (( i = 0; i < bitcoindTimeout; i += bitcoindDelta )); do
