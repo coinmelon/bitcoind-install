@@ -175,11 +175,7 @@ doStop() {
     echo "Unknown forcing specification \`${1}'!"
   fi
 
-  echo -n "Stopping \`bitcoind'... "
-  if ! stopBitcoind; then
-    echo 'error!'; return 1
-  fi
-  echo 'done!'
+  if ! stopBitcoind; then return 1; fi
 
   echo -n "Waiting for \`bitcoind' to stop... "
   for (( i = 0; i < bitcoindTimeout; i += bitcoindDelta )); do
