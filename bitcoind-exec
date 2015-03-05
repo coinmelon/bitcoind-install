@@ -1,0 +1,27 @@
+#! /bin/bash
+
+bitcoindUser='bitcoind'
+bitcoindGroup='bitcoind'
+
+bitcoinCli='/usr/bin/bitcoin-cli'
+
+configfile='/etc/bitcoind/bitcoind.conf'
+
+datadir='/var/lib/bitcoind'
+
+################################################################################
+
+# remove initial switches
+while [[ "${1}" == -* ]]; do shift; done
+
+################################################################################
+
+sudo                   \
+-n                     \
+"-u${bitcoindUser}"    \
+"-g${bitcoindGroup}"   \
+--                     \
+"${bitcoinCli}"        \
+"--conf=${configfile}" \
+"--datadir=${datadir}" \
+"${@}"
