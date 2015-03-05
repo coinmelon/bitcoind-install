@@ -257,6 +257,7 @@ fileStatus['/usr/bin/bitcoind']='unknown'
 fileStatus['/usr/bin/bitcoin-cli']='unknown'
 fileStatus['/usr/bin/bitcoin-tx']='unknown'
 fileStatus['/usr/bin/bitcoind-init']='unknown'
+fileStatus['/usr/bin/bitcoind-exec']='unknown'
 
 getFileStatus() {
   if [[ 'unknown' == "${fileStatus["${1}"]}" ]]; then
@@ -319,7 +320,8 @@ copyFiles() {
   copyFile '/usr/bin/bitcoind'           'bitcoin/src/bitcoind'                && \
   copyFile '/usr/bin/bitcoin-cli'        'bitcoin/src/bitcoin-cli'             && \
   copyFile '/usr/bin/bitcoin-tx'         'bitcoin/src/bitcoin-tx'              && \
-  copyFile '/usr/bin/bitcoind-init'      "${installerDirectory}/bitcoind-init"
+  copyFile '/usr/bin/bitcoind-init'      "${installerDirectory}/bitcoind-init" && \
+  copyFile '/usr/bin/bitcoind-exec'      "${installerDirectory}/bitcoind-exec"
 }
 
 deployFiles() {
@@ -327,7 +329,8 @@ deployFiles() {
   copyFile '/usr/bin/bitcoind'           'bitcoind'      && \
   copyFile '/usr/bin/bitcoin-cli'        'bitcoin-cli'   && \
   copyFile '/usr/bin/bitcoin-tx'         'bitcoin-tx'    && \
-  copyFile '/usr/bin/bitcoind-init'      'bitcoind-init'
+  copyFile '/usr/bin/bitcoind-init'      'bitcoind-init' && \
+  copyFile '/usr/bin/bitcoind-exec'      'bitcoind-exec'
 }
 
 removeFiles() {
@@ -336,6 +339,7 @@ removeFiles() {
   removeFile '/usr/bin/bitcoin-cli'
   removeFile '/usr/bin/bitcoin-tx'
   removeFile '/usr/bin/bitcoind-init'
+  removeFile '/usr/bin/bitcoind-exec'
 }
 
 keepFiles() {
@@ -344,6 +348,7 @@ keepFiles() {
   keepFile '/usr/bin/bitcoin-cli'
   keepFile '/usr/bin/bitcoin-tx'
   keepFile '/usr/bin/bitcoind-init'
+  keepFile '/usr/bin/bitcoind-exec'
 }
 
 unkeepFiles() {
@@ -352,6 +357,7 @@ unkeepFiles() {
   unkeepFile '/usr/bin/bitcoin-cli'
   unkeepFile '/usr/bin/bitcoin-tx'
   unkeepFile '/usr/bin/bitcoind-init'
+  unkeepFile '/usr/bin/bitcoind-exec'
 }
 
 verifyNoInstall() {
@@ -359,12 +365,14 @@ verifyNoInstall() {
   getFileStatus '/usr/bin/bitcoin-cli'
   getFileStatus '/usr/bin/bitcoin-tx'
   getFileStatus '/usr/bin/bitcoind-init'
+  getFileStatus '/usr/bin/bitcoind-exec'
 
   echo -n 'Checking for existing installation... '
   if [[ 'existing' == "${fileStatus['/usr/bin/bitcoind']}"      \
      || 'existing' == "${fileStatus['/usr/bin/bitcoin-cli']}"   \
      || 'existing' == "${fileStatus['/usr/bin/bitcoin-tx']}"    \
-     || 'existing' == "${fileStatus['/usr/bin/bitcoind-init']}" ]]; then
+     || 'existing' == "${fileStatus['/usr/bin/bitcoind-init']}" \
+     || 'existing' == "${fileStatus['/usr/bin/bitcoind-exec']}" ]]; then
     echo 'previous installation found! Aborting!'
     exit 1
   else
@@ -632,7 +640,8 @@ installBitCoin() {
        chown -f 'bitcoind:bitcoind' '/usr/bin/bitcoind'           && \
        chown -f 'bitcoind:bitcoind' '/usr/bin/bitcoin-cli'        && \
        chown -f 'bitcoind:bitcoind' '/usr/bin/bitcoin-tx'         && \
-       chown -f 'root:root'         '/usr/bin/bitcoind-init'; then
+       chown -f 'root:root'         '/usr/bin/bitcoind-init'      && \
+       chown -f 'root:root'         '/usr/bin/bitcoind-exec'; then
       echo 'done!'
 
       echo -n 'Changing permissions... '
@@ -642,7 +651,8 @@ installBitCoin() {
          chmod -f 'u=xs,g=xs,o='   '/usr/bin/bitcoind'           && \
          chmod -f 'u=xs,g=xs,o='   '/usr/bin/bitcoin-cli'        && \
          chmod -f 'u=xs,g=xs,o='   '/usr/bin/bitcoin-tx'         && \
-         chmod -f 'u=x,g=x,o='     '/usr/bin/bitcoind-init'; then
+         chmod -f 'u=x,g=x,o='     '/usr/bin/bitcoind-init'      && \
+         chmod -f 'u=x,g=x,o='     '/usr/bin/bitcoind-exec'; then
          echo 'done!'
          return 0
       fi
@@ -670,6 +680,7 @@ prepareDeploy() {
   if ! cp --target-directory=deploy         \
       "${installerDirectory}/bitcoind.conf" \
       "${installerDirectory}/bitcoind-init" \
+      "${installerDirectory}/bitcoind-exec" \
       'bitcoin/src/bitcoind'                \
       'bitcoin/src/bitcoin-cli'             \
       'bitcoin/src/bitcoin-tx'; then
@@ -683,6 +694,7 @@ prepareDeploy() {
   if ! tar czf "${tarballName}" \
       'bitcoind.conf'           \
       'bitcoind-init'           \
+      'bitcoind-exec'           \
       'bitcoind'                \
       'bitcoin-cli'             \
       'bitcoin-tx'; then
@@ -803,7 +815,7 @@ This action will:
     - copy the \`bitcoind', \`bitcoin-cli', and \`bitcoin-tx' executables to
       \`/usr/bin',
     - copy the init-system-agnostic init script \`bitcoind-init' to \`/usr/bin',
-      and
+    - copy the execution driver script \`bitcoind-exec' to \`/usr/bin', and
     - change ownership, group-ownership, and permissions of all the created
       and copied files and directories.
 
@@ -829,8 +841,9 @@ This action will:
     - perform a \`get' action,
     - perform a \`make' action, and
     - create a tarball with the \`bitcoind', \`bitcoin-cli', \`bitcoin-tx', the
-      empty (ie. COMPLETELY USELESS) configuration file \`bitcoind.conf', and
-      the init-system-agnostic init script \`bitcoind-init'.
+      empty (ie. COMPLETELY USELESS) configuration file \`bitcoind.conf', the
+      init-system-agnostic init script \`bitcoind-init', and the execution driver
+      script \`bitcoind-exec'.
 
 If no TAG is given, the \`master' tag is fetched.
 If no FILE is given, \`bitcoind-deploy.tar.gz' is used.
