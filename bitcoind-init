@@ -18,7 +18,7 @@ configfile='/etc/bitcoind/bitcoind.conf'
 
 datadir='/var/lib/bitcoind'
 
-(( bitcoindTimeout = 10 ))
+(( bitcoindTimeout = 30 ))
 (( bitcoindDelta   = 5  ))
 
 ################################################################################
