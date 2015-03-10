@@ -147,8 +147,6 @@ doStart() {
     statusBitcoind >/dev/null; (( status = $? ))
     if (( 0 == status )); then
       echo 'done!'; return 0
-    elif (( 3 != status )); then
-      echo 'error!'; return 1
     fi
   done
 
@@ -181,8 +179,6 @@ doStop() {
     statusBitcoind >/dev/null; (( status = $? ))
     if (( 1 == status )); then
       echo 'done!'; return 0
-    elif (( 0 != status )); then
-      echo 'error!'; return 1
     fi
   done
 
